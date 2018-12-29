@@ -1,56 +1,3 @@
-/**
- * Copyright (c) 2014 - 2018, Nordic Semiconductor ASA
- *
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without modification,
- * are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form, except as embedded into a Nordic
- *    Semiconductor ASA integrated circuit in a product or a software update for
- *    such product, must reproduce the above copyright notice, this list of
- *    conditions and the following disclaimer in the documentation and/or other
- *    materials provided with the distribution.
- *
- * 3. Neither the name of Nordic Semiconductor ASA nor the names of its
- *    contributors may be used to endorse or promote products derived from this
- *    software without specific prior written permission.
- *
- * 4. This software, with or without modification, must only be used with a
- *    Nordic Semiconductor ASA integrated circuit.
- *
- * 5. Any software provided in binary form under this license must not be reverse
- *    engineered, decompiled, modified and/or disassembled.
- *
- * THIS SOFTWARE IS PROVIDED BY NORDIC SEMICONDUCTOR ASA "AS IS" AND ANY EXPRESS
- * OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
- * OF MERCHANTABILITY, NONINFRINGEMENT, AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL NORDIC SEMICONDUCTOR ASA OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
- * GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
- * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- */
-/** @file
- *
- * @defgroup ble_sdk_app_template_main main.c
- * @{
- * @ingroup ble_sdk_app_template
- * @brief Template project main file.
- *
- * This file contains a template for creating a new application. It has the code necessary to wakeup
- * from button, advertise, get a connection restart advertising on disconnect and if no new
- * connection created go back to system-off mode.
- * It can easily be used as a starting point for creating a new application, the comments identified
- * with 'YOUR_JOB' indicates where and how you can customize.
- */
-
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -82,7 +29,9 @@
 #include "nrf_log_ctrl.h"
 #include "nrf_log_default_backends.h"
 
-
+#include "app_uart.h"
+#include "nrf_uart.h"
+#include "nrf_drv_clock.h"
 #include "ble_alarm.h"
 
 
@@ -112,6 +61,8 @@
 #define SEC_PARAM_OOB                   0                                       /**< Out Of Band data not available. */
 #define SEC_PARAM_MIN_KEY_SIZE          7                                       /**< Minimum encryption key size. */
 #define SEC_PARAM_MAX_KEY_SIZE          16                                      /**< Maximum encryption key size. */
+#define UART_TX_BUF_SIZE                256                                         /**< UART TX buffer size. */
+#define UART_RX_BUF_SIZE                256                                         /**< UART RX buffer size. */
 
 #define DEAD_BEEF                       0xDEADBEEF                              /**< Value used as error code on stack dump, can be used to identify stack location on stack unwind. */
 
@@ -123,6 +74,8 @@ BLE_ADVERTISING_DEF(m_advertising);                                             
 
 static uint16_t m_conn_handle = BLE_CONN_HANDLE_INVALID;                        /**< Handle of the current connection. */
 static uint8_t m_custom_value = 0;
+
+//static uint16_t   m_ble_nus_max_data_len = BLE_GATT_ATT_MTU_DEFAULT - 3;            /**< Maximum length of data (in bytes) that can be transmitted to the peer by the Nordic UART service module. */
 
 /* YOUR_JOB: Declare all services structure your application is using
  *  BLE_XYZ_DEF(m_xyz);
@@ -264,6 +217,18 @@ static void nrf_qwr_error_handler(uint32_t nrf_error)
     APP_ERROR_HANDLER(nrf_error);
 }
 
+void send_to_esp(ble_alarm_evt_t * p_evt)
+{
+		ret_code_t err_code;
+		for (uint32_t i = 0; i < p_evt->params.alarm_data.length; i++)
+		{
+			do
+			{
+				err_code = app_uart_put(p_evt->params.alarm_data.p_data[i]);
+			}while(err_code == NRF_ERROR_BUSY);
+		}
+}
+
 /**@brief Function for handling the Custom Service Service events.
  *
  * @details This function will be called for all Custom Service events which are passed to
@@ -293,8 +258,14 @@ static void on_alarm_evt(ble_alarm_t     * p_alarm_service,
             break;
 
         case BLE_ALARM_EVT_DISCONNECTED:
-              break;
-
+            break;
+				case BLE_ALARM_EVT_ALARM:
+						nrf_gpio_pin_set(4);
+						send_to_esp(p_evt);
+						break;
+				case BLE_ALARM_EVT:
+						send_to_esp(p_evt);
+						break;
         default:
               // No implementation needed.
               break;
@@ -458,13 +429,12 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
     {
         case BLE_GAP_EVT_DISCONNECTED:
             NRF_LOG_INFO("Disconnected.");
-						nrf_gpio_pin_clear(LED_3);
+						nrf_gpio_pin_set(4);
             // LED indication will be changed when advertising starts.
             break;
 
         case BLE_GAP_EVT_CONNECTED:
             NRF_LOG_INFO("Connected.");
-						nrf_gpio_pin_set(LED_3);
             err_code = bsp_indication_set(BSP_INDICATE_CONNECTED);
             APP_ERROR_CHECK(err_code);
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
@@ -613,7 +583,6 @@ static void bsp_event_handler(bsp_event_t event)
                 }
             }
             break; // BSP_EVENT_KEY_0
-
         default:
             break;
     }
@@ -632,8 +601,8 @@ static void advertising_init(void)
 		init.srdata.name_type                = BLE_ADVDATA_FULL_NAME;
 		init.srdata.include_appearance			 = true;
 	
-//		init.advdata.name_type							 = BLE_ADVDATA_FULL_NAME;
-//		init.advdata.include_appearance			 = true;
+		init.advdata.name_type							 = BLE_ADVDATA_FULL_NAME;
+		init.advdata.include_appearance			 = true;
     init.advdata.flags                   = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
     init.advdata.uuids_complete.uuid_cnt = sizeof(m_adv_uuids) / sizeof(m_adv_uuids[0]);
     init.advdata.uuids_complete.p_uuids  = m_adv_uuids;
@@ -661,7 +630,10 @@ static void buttons_leds_init(bool * p_erase_bonds)
 {
     ret_code_t err_code;
     bsp_event_t startup_event;
-
+		
+		nrf_gpio_cfg_output(4);
+		nrf_gpio_pin_clear(4);
+	
     err_code = bsp_init(BSP_INIT_LEDS | BSP_INIT_BUTTONS, bsp_event_handler);
     APP_ERROR_CHECK(err_code);
 
@@ -723,7 +695,60 @@ static void advertising_start(bool erase_bonds)
     }
 }
 
+/**@brief   Function for handling app_uart events.
+ */
+/**@snippet [Handling the data received over UART] */
+void uart_event_handle(app_uart_evt_t * p_event)
+{
+    switch (p_event->evt_type)
+    {
+        case APP_UART_DATA_READY:
+            break;
 
+        case APP_UART_COMMUNICATION_ERROR:
+            APP_ERROR_HANDLER(p_event->data.error_communication);
+            break;
+
+        case APP_UART_FIFO_ERROR:
+            APP_ERROR_HANDLER(p_event->data.error_code);
+            break;
+
+        default:
+            break;
+    }
+}
+/**@snippet [Handling the data received over UART] */
+
+/**@brief  Function for initializing the UART module.
+ */
+/**@snippet [UART Initialization] */
+static void uart_init(void)
+{
+    uint32_t                     err_code;
+    app_uart_comm_params_t const comm_params =
+    {
+        .rx_pin_no    = RX_PIN_NUMBER,
+        .tx_pin_no    = TX_PIN_NUMBER,
+        .rts_pin_no   = RTS_PIN_NUMBER,
+        .cts_pin_no   = CTS_PIN_NUMBER,
+        .flow_control = APP_UART_FLOW_CONTROL_DISABLED,
+        .use_parity   = false,
+#if defined (UART_PRESENT)
+        .baud_rate    = NRF_UART_BAUDRATE_115200
+#else
+        .baud_rate    = NRF_UARTE_BAUDRATE_115200
+#endif
+    };
+
+    APP_UART_FIFO_INIT(&comm_params,
+                       UART_RX_BUF_SIZE,
+                       UART_TX_BUF_SIZE,
+                       uart_event_handle,
+                       APP_IRQ_PRIORITY_LOWEST,
+                       err_code);
+    APP_ERROR_CHECK(err_code);
+}
+/**@snippet [UART Initialization] */
 
 /**@brief Function for application main entry.
  */
@@ -732,6 +757,7 @@ int main(void)
     bool erase_bonds;
 
     // Initialize.
+		uart_init();
     log_init();
     timers_init();
     buttons_leds_init(&erase_bonds);

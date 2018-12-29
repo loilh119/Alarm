@@ -5,7 +5,11 @@
 #include "nrf_gpio.h"
 #include "boards.h"
 #include "nrf_log.h"
+#include "app_uart.h"
+#include "nrf_uart.h"
+#include "ble_link_ctx_manager.h"
 
+uint8_t is_main_data = 1;
 
 uint32_t ble_alarm_init(ble_alarm_t * p_alarm, const ble_alarm_init_t * p_alarm_init)
 {
@@ -85,17 +89,18 @@ static uint32_t custom_value_char_add(ble_alarm_t * p_alarm, const ble_alarm_ini
     attr_char_value.p_attr_md = &attr_md;
     attr_char_value.init_len  = sizeof(uint8_t);
     attr_char_value.init_offs = 0;
-    attr_char_value.max_len   = sizeof(uint8_t);
+		attr_char_value.max_len   = BLE_GATTS_FIX_ATTR_LEN_MAX;
+//    attr_char_value.max_len   = sizeof(uint8_t);
 		
 		memset(&cccd_md, 0, sizeof(cccd_md));
 
     //  Read  operation on Cccd should be possible without authentication.
     BLE_GAP_CONN_SEC_MODE_SET_OPEN(&cccd_md.read_perm);
     BLE_GAP_CONN_SEC_MODE_SET_OPEN(&cccd_md.write_perm);
-    cccd_md.vloc       = BLE_GATTS_VLOC_STACK;
+//    cccd_md.vloc       = BLE_GATTS_VLOC_STACK;
 
-		char_md.char_props.notify = 1;  
-    char_md.p_cccd_md         = &cccd_md; 
+//		char_md.char_props.notify = 1;  
+//    char_md.p_cccd_md         = &cccd_md; 
 		
 		err_code = sd_ble_gatts_characteristic_add(p_alarm->service_handle, &char_md,
                                                &attr_char_value,
@@ -132,7 +137,8 @@ static uint32_t custom_value_char_add(ble_alarm_t * p_alarm, const ble_alarm_ini
     attr_char_value.p_attr_md = &attr_md;
     attr_char_value.init_len  = sizeof(uint8_t);
     attr_char_value.init_offs = 0;
-    attr_char_value.max_len   = sizeof(uint8_t);
+		attr_char_value.max_len   = BLE_GATTS_FIX_ATTR_LEN_MAX;
+//    attr_char_value.max_len   = sizeof(uint8_t);
 		
 		err_code = sd_ble_gatts_characteristic_add(p_alarm->service_handle, &char_md,
                                                &attr_char_value,
@@ -147,7 +153,7 @@ static uint32_t custom_value_char_add(ble_alarm_t * p_alarm, const ble_alarm_ini
  * @param[in]   p_ble_evt   Event received from the BLE stack.
  */
 static void on_connect(ble_alarm_t * p_alarm, ble_evt_t const * p_ble_evt)
-{
+{	
     p_alarm->conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
 	
 		ble_alarm_evt_t evt;
@@ -175,24 +181,25 @@ static void on_disconnect(ble_alarm_t * p_alarm, ble_evt_t const * p_ble_evt)
  */
 static void on_write(ble_alarm_t * p_alarm, ble_evt_t const * p_ble_evt)
 {
-		ble_gatts_evt_write_t const * p_evt_write = &p_ble_evt->evt.gatts_evt.params.write;
-    
-    // Check if the handle passed with the event matches the Custom Value Characteristic handle.
-    if (p_evt_write->handle == p_alarm->rx_value_handles.value_handle)
+		ret_code_t                    err_code;
+    ble_alarm_evt_t               evt;
+    ble_alarm_client_context_t  * p_client;
+    ble_gatts_evt_write_t const * p_evt_write = &p_ble_evt->evt.gatts_evt.params.write;
+	
+		err_code = blcm_link_ctx_get(p_alarm->p_link_ctx_storage,
+                                 p_ble_evt->evt.gatts_evt.conn_handle,
+                                 (void *) &p_client);
+	
+		if (err_code != NRF_SUCCESS)
     {
-			NRF_LOG_INFO("RECIEVE");
-			if(*p_evt_write->data == 0x11)
-			{
-				nrf_gpio_pin_clear(LED_3);
-				NRF_LOG_INFO("ON");
-			}
-			else
-			{
-				nrf_gpio_pin_set(LED_3);
-				NRF_LOG_INFO("OFF");
-			}
+        NRF_LOG_ERROR("Link context for 0x%02X connection handle could not be fetched.",
+                      p_ble_evt->evt.gatts_evt.conn_handle);
     }
-		
+
+    memset(&evt, 0, sizeof(ble_alarm_evt_t));
+    evt.p_alarm     = p_alarm;
+    evt.conn_handle = p_ble_evt->evt.gatts_evt.conn_handle;
+    evt.p_link_ctx  = p_client;
 		
 		 // Check if the Custom value CCCD is written to and that the value is the appropriate length, i.e 2 bytes.
     if ((p_evt_write->handle == p_alarm->tx_value_handles.cccd_handle)
@@ -214,6 +221,37 @@ static void on_write(ble_alarm_t * p_alarm, ble_evt_t const * p_ble_evt)
             // Call the application event handler.
             p_alarm->evt_handler(p_alarm, &evt);
         }
+    }
+		
+		else if ((p_evt_write->handle == p_alarm->rx_value_handles.value_handle) &&
+             (p_alarm->evt_handler != NULL))
+    {	
+			if(is_main_data == 1)
+			{
+				is_main_data = 0;
+				if(p_evt_write->data[0] == 's')
+				{	
+					evt.evt_type                 = BLE_ALARM_EVT_ALARM;
+					evt.params.alarm_data.p_data = p_evt_write->data;
+					evt.params.alarm_data.length = p_evt_write->len;
+					p_alarm->evt_handler(p_alarm, &evt);
+				}
+				else
+				{
+					evt.evt_type                 = BLE_ALARM_EVT;
+					evt.params.alarm_data.p_data = p_evt_write->data;
+					evt.params.alarm_data.length = p_evt_write->len;
+					p_alarm->evt_handler(p_alarm, &evt);
+				}
+			}
+			else if(is_main_data == 0)
+			{
+				is_main_data = 1;
+				evt.evt_type                 = BLE_ALARM_EVT;
+				evt.params.alarm_data.p_data = p_evt_write->data;
+				evt.params.alarm_data.length = p_evt_write->len;
+				p_alarm->evt_handler(p_alarm, &evt);
+			}
     }
 }
 
@@ -254,6 +292,45 @@ void ble_alarm_on_ble_evt( ble_evt_t const * p_ble_evt, void * p_context)
             // No implementation needed.
             break;
     }
+}
+
+uint32_t ble_nus_data_send(ble_alarm_t * p_nus,
+                           uint8_t     * p_data,
+                           uint16_t    * p_length,
+                           uint16_t      conn_handle)
+{
+    ret_code_t                   err_code;
+    ble_gatts_hvx_params_t       hvx_params;
+    ble_alarm_client_context_t * p_client;
+
+    VERIFY_PARAM_NOT_NULL(p_nus);
+
+    err_code = blcm_link_ctx_get(p_nus->p_link_ctx_storage, conn_handle, (void *) &p_client);
+    VERIFY_SUCCESS(err_code);
+
+    if ((conn_handle == BLE_CONN_HANDLE_INVALID) || (p_client == NULL))
+    {
+        return NRF_ERROR_NOT_FOUND;
+    }
+
+    if (!p_client->is_notification_enabled)
+    {
+        return NRF_ERROR_INVALID_STATE;
+    }
+
+    if (*p_length > BLE_NUS_MAX_DATA_LEN)
+    {
+        return NRF_ERROR_INVALID_PARAM;
+    }
+
+    memset(&hvx_params, 0, sizeof(hvx_params));
+
+    hvx_params.handle = p_nus->tx_value_handles.value_handle;
+    hvx_params.p_data = p_data;
+    hvx_params.p_len  = p_length;
+    hvx_params.type   = BLE_GATT_HVX_NOTIFICATION;
+
+    return sd_ble_gatts_hvx(conn_handle, &hvx_params);
 }
 
 /**@brief Function for updating the custom value.
