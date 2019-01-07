@@ -35,7 +35,7 @@
 #include "ble_alarm.h"
 
 
-#define DEVICE_NAME                     "Alarm"                       					/**< Name of device. Will be included in the advertising data. */
+#define DEVICE_NAME                     "ALARM-001"                       					/**< Name of device. Will be included in the advertising data. */
 #define MANUFACTURER_NAME               "NordicSemiconductor"                   /**< Manufacturer. Will be passed to Device Information Service. */
 #define APP_ADV_INTERVAL                300                                     /**< The advertising interval (in units of 0.625 ms. This value corresponds to 187.5 ms). */
 
@@ -74,7 +74,7 @@ BLE_ADVERTISING_DEF(m_advertising);                                             
 
 static uint16_t m_conn_handle = BLE_CONN_HANDLE_INVALID;                        /**< Handle of the current connection. */
 static uint8_t m_custom_value = 0;
-
+static uint8_t data_send[5];
 //static uint16_t   m_ble_nus_max_data_len = BLE_GATT_ATT_MTU_DEFAULT - 3;            /**< Maximum length of data (in bytes) that can be transmitted to the peer by the Nordic UART service module. */
 
 /* YOUR_JOB: Declare all services structure your application is using
@@ -415,7 +415,6 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt)
     }
 }
 
-
 /**@brief Function for handling BLE events.
  *
  * @param[in]   p_ble_evt   Bluetooth stack event.
@@ -424,12 +423,23 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt)
 static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
 {
     ret_code_t err_code = NRF_SUCCESS;
-
+		data_send[0] = 's';
+		data_send[1] = 0x0D;
+		data_send[2] = 0x00;
+		data_send[3] = 0x00;
+		data_send[4] = 0x0D;
     switch (p_ble_evt->header.evt_id)
     {
         case BLE_GAP_EVT_DISCONNECTED:
             NRF_LOG_INFO("Disconnected.");
 						nrf_gpio_pin_set(4);
+						for (uint32_t i = 0; i < 5; i++)
+						{
+							do
+							{
+								err_code = app_uart_put(data_send[i]);
+							}while(err_code == NRF_ERROR_BUSY);
+						}
             // LED indication will be changed when advertising starts.
             break;
 
